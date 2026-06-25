@@ -6,7 +6,11 @@ executable — no installer, no runtime, no admin rights, no registry, no
 `%APPDATA%`. Everything it writes (log, vendor cache, profiles, reports) lives in
 the same folder as the `.exe`.
 
-English | [Español](README.es.md)
+[![CI](https://github.com/crapface/netwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/crapface/netwatch/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/crapface/netwatch?sort=semver)](https://github.com/crapface/netwatch/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**[⬇ Download the latest NetWatch.exe](https://github.com/crapface/netwatch/releases/latest)** · English | [Español](README.es.md)
 
 ---
 
