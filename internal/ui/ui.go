@@ -1317,8 +1317,9 @@ func (a *App) hostDialog(titleKey string, h *model.Host, ipEditable bool) bool {
 	var ipLE, labelLE, portsLE, vendorLE *walk.LineEdit
 	var notesTE *walk.TextEdit
 	var okPB, cancelPB *walk.PushButton
+	accepted := false
 
-	cmd, _ := Dialog{
+	_, _ = Dialog{
 		AssignTo:      &dlg,
 		Title:         i18n.T(titleKey),
 		MinSize:       Size{Width: 480, Height: 380},
@@ -1346,13 +1347,23 @@ func (a *App) hostDialog(titleKey string, h *model.Host, ipEditable bool) bool {
 				Children: []Widget{
 					HSpacer{},
 					PushButton{AssignTo: &okPB, Text: i18n.T("gen.ok"), OnClicked: func() {
+						// Capture field values WHILE the dialog controls are alive.
+						// Reading them after Run() returns is unreliable: a walk
+						// modal dialog disposes its controls when it closes, so
+						// .Text() comes back empty — which silently dropped edits.
 						if ipEditable {
 							ip := net.ParseIP(strings.TrimSpace(ipLE.Text()))
 							if ip == nil || ip.To4() == nil {
 								a.errBox(i18n.T("msg.need_ip"))
 								return
 							}
+							h.IP = strings.TrimSpace(ipLE.Text())
 						}
+						h.Label = strings.TrimSpace(labelLE.Text())
+						h.Vendor = strings.TrimSpace(vendorLE.Text())
+						h.Notes = notesTE.Text()
+						h.OpenPorts = parsePorts(portsLE.Text())
+						accepted = true
 						dlg.Accept()
 					}},
 					PushButton{AssignTo: &cancelPB, Text: i18n.T("gen.cancel"), OnClicked: func() { dlg.Cancel() }},
@@ -1361,17 +1372,7 @@ func (a *App) hostDialog(titleKey string, h *model.Host, ipEditable bool) bool {
 		},
 	}.Run(a.mw)
 
-	if cmd != walk.DlgCmdOK {
-		return false
-	}
-	if ipEditable {
-		h.IP = strings.TrimSpace(ipLE.Text())
-	}
-	h.Label = strings.TrimSpace(labelLE.Text())
-	h.Vendor = strings.TrimSpace(vendorLE.Text())
-	h.Notes = notesTE.Text()
-	h.OpenPorts = parsePorts(portsLE.Text())
-	return true
+	return accepted
 }
 
 // ---- about -----------------------------------------------------------------

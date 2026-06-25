@@ -3,6 +3,16 @@
 All notable changes to NetWatch are documented here.
 This project bumps the `version` constant in `main.go` on every change.
 
+## [1.1.3] — 2026-06-25
+
+### Fixed
+- **Edited and manually-added host details now save and display.** Root cause: the
+  Add/Edit-host dialog read its fields *after* `Dialog.Run()` returned, but a walk
+  modal dialog disposes its controls when it closes — so every field read back
+  empty and the edit was silently dropped. Field values are now captured inside the
+  OK handler, while the controls are still alive, then written to the host and
+  persisted to the Site.
+
 ## [1.1.2] — 2026-06-25
 
 ### Fixed
