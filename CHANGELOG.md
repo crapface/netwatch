@@ -3,6 +3,19 @@
 All notable changes to NetWatch are documented here.
 This project bumps the `version` constant in `main.go` on every change.
 
+## [1.1.4] — 2026-06-25
+
+### Fixed
+- **MAC vendor lookups are far more reliable.** The OUI updater now tries IEEE's
+  **CSV** endpoint first, sends a browser User-Agent (IEEE rejects generic agents
+  with 403), and surfaces the **actual error** from every source when it fails
+  (e.g. a corporate TLS-inspection block) instead of leaving vendors silently
+  blank. You can also drop an `oui.csv` or `oui.txt` next to `NetWatch.exe` and it
+  loads automatically — handy on locked-down networks. The parse + lookup path is
+  now unit-tested (a gateway MAC like `84:47:09:…` resolves once data is loaded).
+- **About bio spacing** — the résumé now uses CRLF line endings so the blank lines
+  between sections render (Win32 text controls ignore bare `\n`).
+
 ## [1.1.3] — 2026-06-25
 
 ### Fixed

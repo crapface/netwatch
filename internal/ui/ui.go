@@ -517,6 +517,16 @@ func (a *App) postCreate() {
 	if n, err := oui.Load(a.ouiCache); err == nil && n > 0 {
 		applog.Info("oui: loaded %d prefixes from cache", n)
 	}
+	// Locked-down network fallback: a user can drop oui.csv / oui.txt beside the
+	// exe and it loads automatically (no IEEE download needed).
+	if !oui.Loaded() {
+		for _, name := range []string{"oui.csv", "oui.txt"} {
+			if n, err := oui.LoadFile(filepath.Join(a.appDir, name)); err == nil && n > 0 {
+				applog.Info("oui: loaded %d prefixes from local %s", n, name)
+				break
+			}
+		}
+	}
 
 	a.setTLSCombo()
 	a.syncUIFromProfile()
@@ -1409,7 +1419,8 @@ func (a *App) onAbout() {
 		Layout: VBox{},
 		Children: []Widget{
 			TextEdit{
-				Text:     resumeText,
+				// Win32 EDIT controls need CRLF; bare \n collapses blank lines.
+				Text:     strings.ReplaceAll(resumeText, "\n", "\r\n"),
 				ReadOnly: true,
 				VScroll:  true,
 				MinSize:  Size{Width: 420, Height: 380},

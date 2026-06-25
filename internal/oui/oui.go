@@ -1,29 +1,37 @@
 // Package oui downloads, parses and caches the IEEE OUI database, mapping the
 // first 6 hex digits of a MAC address to a hardware vendor name.
+//
+// Robustness notes: IEEE's oui.txt endpoint frequently rejects non-browser
+// User-Agents and is often blocked/SSL-inspected on corporate networks, which
+// is the usual reason vendor names come back blank. We therefore try the CSV
+// endpoint first, send a browser-like User-Agent, surface the real error when
+// every source fails, and support loading a local oui.csv/oui.txt dropped next
+// to the executable for locked-down networks.
 package oui
 
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 
 	"netwatch/internal/netutil"
 )
 
-// SourceURLs are tried in order; IEEE serves the same file over https and http.
-var SourceURLs = []string{
+// Sources are tried in order. CSV first (most reliable + easiest to parse).
+var Sources = []string{
+	"https://standards-oui.ieee.org/oui/oui.csv",
 	"https://standards-oui.ieee.org/oui/oui.txt",
 	"http://standards-oui.ieee.org/oui/oui.txt",
 }
 
-// "28-6F-B9   (hex)\t\tNokia Shanghai Bell Co., Ltd."
-var ouiLineRe = regexp.MustCompile(`^\s*([0-9A-Fa-f]{2})[-:]([0-9A-Fa-f]{2})[-:]([0-9A-Fa-f]{2})\s+\(hex\)\s+(.+?)\s*$`)
+const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetWatch/1.x OUI-updater"
 
 var (
 	mu     sync.RWMutex
@@ -56,6 +64,13 @@ func VendorOf(mac string) string {
 	return table[key]
 }
 
+func swap(m map[string]string) {
+	mu.Lock()
+	table = m
+	loaded = len(m) > 0
+	mu.Unlock()
+}
+
 // Load reads a previously saved cache file (oui_cache.json) into memory.
 func Load(path string) (int, error) {
 	b, err := os.ReadFile(path)
@@ -66,98 +81,161 @@ func Load(path string) (int, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return 0, err
 	}
-	mu.Lock()
-	table = m
-	loaded = len(m) > 0
-	mu.Unlock()
+	swap(m)
 	return len(m), nil
 }
 
-// Update downloads the IEEE OUI list, parses it, swaps it into memory and
-// writes the cache file. onProgress receives short human-readable status notes.
+// LoadFile parses a local oui.csv or oui.txt (chosen by extension) and swaps it
+// into memory. Lets users on locked-down networks supply the file by hand.
+func LoadFile(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	m, err := parse(path, f)
+	if err != nil {
+		return 0, err
+	}
+	if len(m) == 0 {
+		return 0, fmt.Errorf("no OUI entries parsed from %s", path)
+	}
+	swap(m)
+	return len(m), nil
+}
+
+// Update downloads the OUI list from the first working source, parses it, swaps
+// it into memory and writes the JSON cache.
 func Update(ctx context.Context, cachePath string, onProgress func(note string)) (int, error) {
 	note := func(s string) {
 		if onProgress != nil {
 			onProgress(s)
 		}
 	}
+	client := &http.Client{}
+	var errs []string
 
-	client := &http.Client{} // cancellation comes from ctx on the request
-	var resp *http.Response
-	var lastErr error
-	for _, u := range SourceURLs {
+	for _, u := range Sources {
+		note("connecting…")
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			lastErr = err
+			errs = append(errs, fmt.Sprintf("%s: %v", u, err))
 			continue
 		}
-		req.Header.Set("User-Agent", "NetWatch/1.0 (+https://local)")
-		note("connecting…")
-		r, err := client.Do(req)
+		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("Accept", "text/csv,text/plain,*/*")
+
+		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = err
+			errs = append(errs, fmt.Sprintf("%s: %v", u, err))
 			continue
 		}
-		if r.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("HTTP %d from %s", r.StatusCode, u)
-			_ = r.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			errs = append(errs, fmt.Sprintf("%s: HTTP %d", u, resp.StatusCode))
+			_ = resp.Body.Close()
 			continue
 		}
-		resp = r
-		break
-	}
-	if resp == nil {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("download failed")
-		}
-		return 0, lastErr
-	}
-	defer resp.Body.Close()
 
-	note("parsing…")
+		note("parsing…")
+		m, perr := parse(u, resp.Body)
+		_ = resp.Body.Close()
+		if perr != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", u, perr))
+			continue
+		}
+		if len(m) == 0 {
+			errs = append(errs, fmt.Sprintf("%s: no entries parsed", u))
+			continue
+		}
+
+		if out, err := json.Marshal(m); err == nil {
+			_ = os.WriteFile(cachePath, out, 0o644)
+		}
+		swap(m)
+		return len(m), nil
+	}
+
+	return 0, fmt.Errorf("all OUI sources failed:\n%s\n\nTip: on a restricted network, download oui.csv from IEEE on another machine and place it next to NetWatch.exe", strings.Join(errs, "\n"))
+}
+
+// parse picks the CSV or text parser based on the source name/extension.
+func parse(name string, r io.Reader) (map[string]string, error) {
+	if strings.HasSuffix(strings.ToLower(name), ".csv") {
+		return parseCSV(r)
+	}
+	return parseTXT(r)
+}
+
+// parseTXT handles the classic oui.txt "(hex)" lines:
+//
+//	28-6F-B9   (hex)    Nokia Shanghai Bell Co., Ltd.
+func parseTXT(r io.Reader) (map[string]string, error) {
 	m := make(map[string]string, 40000)
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
-	n := 0
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
 	for sc.Scan() {
-		mt := ouiLineRe.FindStringSubmatch(sc.Text())
-		if mt == nil {
+		line := sc.Text()
+		i := strings.Index(line, "(hex)")
+		if i < 0 {
 			continue
 		}
-		key := strings.ToUpper(mt[1] + mt[2] + mt[3])
-		vendor := strings.TrimSpace(mt[4])
-		if vendor == "" {
+		key := hex6(line[:i])
+		if key == "" {
 			continue
 		}
-		m[key] = vendor
-		n++
-		if n%4000 == 0 {
-			note(fmt.Sprintf("%d prefixes…", n))
-		}
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		default:
+		vendor := strings.TrimSpace(line[i+len("(hex)"):])
+		if vendor != "" {
+			m[key] = vendor
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return 0, err
-	}
-	if len(m) == 0 {
-		return 0, fmt.Errorf("no OUI entries parsed (unexpected format)")
-	}
+	return m, sc.Err()
+}
 
-	out, err := json.Marshal(m)
-	if err != nil {
-		return 0, err
+// parseCSV handles oui.csv with header Registry,Assignment,Organization Name,…
+func parseCSV(r io.Reader) (map[string]string, error) {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	cr.LazyQuotes = true
+	m := make(map[string]string, 40000)
+	first := true
+	for {
+		rec, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return m, err
+		}
+		if first {
+			first = false
+			continue // header row
+		}
+		if len(rec) < 3 {
+			continue
+		}
+		key := hex6(rec[1])
+		vendor := strings.TrimSpace(rec[2])
+		if key != "" && vendor != "" {
+			m[key] = vendor
+		}
 	}
-	if err := os.WriteFile(cachePath, out, 0o644); err != nil {
-		return 0, err
-	}
+	return m, nil
+}
 
-	mu.Lock()
-	table = m
-	loaded = true
-	mu.Unlock()
-	return len(m), nil
+// hex6 extracts the first 6 hex digits (uppercase) from s, ignoring separators.
+func hex6(s string) string {
+	b := make([]byte, 0, 6)
+	for i := 0; i < len(s) && len(b) < 6; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'A' && c <= 'F':
+			b = append(b, c)
+		case c >= 'a' && c <= 'f':
+			b = append(b, c-'a'+'A')
+		}
+	}
+	if len(b) < 6 {
+		return ""
+	}
+	return string(b)
 }
