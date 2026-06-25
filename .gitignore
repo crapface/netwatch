@@ -1,0 +1,14 @@
+# Build output
+/dist/
+/NetWatch.exe
+*.exe
+
+# Runtime artifacts (created next to the exe)
+/app.log
+/oui_cache.json
+/profiles/
+*.site
+
+# Go
+*.test
+*.out

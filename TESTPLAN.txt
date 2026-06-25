@@ -1,0 +1,185 @@
+================================================================================
+ NetWatch v1.0.0 — Test Plan
+================================================================================
+Goal: verify every feature on a CLEAN Windows 10/11 machine that has NO Go,
+NO .NET, and no other tooling installed — proving the app is truly portable
+and self-contained.
+
+Legend:  [ ] = to do     (PASS / FAIL) = record the result
+
+--------------------------------------------------------------------------------
+ 0. Set up a clean Windows test VM (pick ONE)
+--------------------------------------------------------------------------------
+A) Microsoft free evaluation image (recommended, no license needed short-term)
+   - Download a "Windows 11 Enterprise (Evaluation)" or the ready-made
+     "Windows 11 development environment" VM from Microsoft:
+       https://developer.microsoft.com/windows/downloads/virtual-machines/
+       https://www.microsoft.com/evalcenter/  (Windows 11 Enterprise eval ISO)
+   - Import the VHDX/OVA into Hyper-V, VirtualBox, or VMware.
+
+B) Hyper-V Quick Create (on a Windows Pro host)
+   - Start menu -> "Hyper-V Quick Create" -> "Windows 11 dev environment" -> Create.
+
+C) Azure VM
+   - Portal -> Create a resource -> Virtual machine -> Image: "Windows 11 Pro"
+     (or Windows Server 2022) -> size B2s -> create. RDP in.
+
+   [ ] (PASS/FAIL) VM boots; confirm NO Go and NO .NET SDK:
+       open PowerShell and run:  go version    (should say "not recognized")
+
+--------------------------------------------------------------------------------
+ 1. Portability / launch  (Acceptance: runs on a fresh machine, no installs)
+--------------------------------------------------------------------------------
+   [ ] Copy ONLY dist\NetWatch.exe to the VM (e.g. C:\NetWatch\). Nothing else.
+   [ ] Double-click NetWatch.exe.
+       (PASS/FAIL) Window opens with three tabs: Scanner / Monitor / Settings.
+       SmartScreen "unknown publisher" -> More info -> Run anyway (binary is unsigned).
+   [ ] Confirm it did NOT request administrator elevation (no UAC prompt).
+   [ ] After closing later, confirm app.log was created next to the exe.
+
+--------------------------------------------------------------------------------
+ 2. Network detection + manual override
+--------------------------------------------------------------------------------
+   [ ] On launch, the "Network range (CIDR)" field is pre-filled with the VM's
+       subnet (compare to `ipconfig`).        (PASS/FAIL)
+   [ ] Click Detect — the field refreshes to the active adapter's subnet.
+   [ ] Manually replace it with a custom value, e.g. 10.0.0.0/16, then put a
+       valid local value back (e.g. 192.168.x.0/24).   (PASS/FAIL editable)
+   [ ] Enter an invalid value (e.g. "999.1/24") and click Scan -> error dialog. (PASS/FAIL)
+
+--------------------------------------------------------------------------------
+ 3. Prepare a discoverable "UP" host (no admin, no extra software)
+--------------------------------------------------------------------------------
+ Open a second PowerShell window ON THE VM (or on another machine in the subnet)
+ and start a listener on port 8080. Leave it running:
+
+   $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, 8080)
+   $listener.Start()
+   "Listening on TCP 8080 — leave this window open. Ctrl+C to stop."
+   while ($true) {
+     if ($listener.Pending()) { $c = $listener.AcceptTcpClient(); $c.Close() }
+     Start-Sleep -Milliseconds 200
+   }
+
+   [ ] (PASS/FAIL) listener prints "Listening on TCP 8080".
+ (If testing against another machine, note its IP — that's the host you expect to find.)
+
+--------------------------------------------------------------------------------
+ 4. Port scanning (discovery)  (Acceptance: /24 completes in a few minutes)
+--------------------------------------------------------------------------------
+   [ ] Settings -> Scan ports: confirm 8080 is present (add it if needed). Add 3000 too.
+   [ ] Scanner tab -> Scan.
+       (PASS/FAIL) Progress bar advances; status shows "Scanning X / Y".
+       (PASS/FAIL) UI stays responsive (you can move the window / switch tabs).
+   [ ] Press Cancel mid-scan on a large range -> scan stops, partial results kept,
+       status says "Scan cancelled".          (PASS/FAIL)
+   [ ] Re-run to completion on your /24.
+       (PASS/FAIL) The 8080 listener host appears with: IP, hostname (if DNS),
+       open port 8080, and (for same-subnet hosts) a MAC.
+   [ ] Time a /24 scan — should finish within a few minutes.   (record: ____)
+
+--------------------------------------------------------------------------------
+ 5. IEEE OUI vendor lookup & update
+--------------------------------------------------------------------------------
+   [ ] Settings -> Vendor database -> status initially "not loaded".
+   [ ] Click Update OUI Data (needs internet).
+       (PASS/FAIL) Status shows "Downloading & parsing…", then
+       "OUI data loaded: N vendor prefixes"; oui_cache.json appears next to exe.
+   [ ] Re-scan -> Vendor column now populated for same-subnet hosts with known MACs.
+   [ ] Close & reopen the app -> OUI shows "loaded" immediately (cache used).  (PASS/FAIL)
+
+--------------------------------------------------------------------------------
+ 6. Bilingual interface (instant switch)  (Acceptance: ALL text switches)
+--------------------------------------------------------------------------------
+   [ ] Top-right Language dropdown -> Español.
+       (PASS/FAIL) Tabs, buttons, column headers, group titles, the flashing
+       button text and the status text all change immediately, no restart.
+   [ ] Switch back to English.            (PASS/FAIL)
+
+--------------------------------------------------------------------------------
+ 7. Email configuration + Test Email
+--------------------------------------------------------------------------------
+   [ ] Settings -> Email: enter SMTP server/port/encryption/user/pass/from/to.
+       (587=STARTTLS, 465=SSL, 25=None). Tick "Enable email alerts".
+   [ ] Note the PLAIN-TEXT password warning is visible (red).   (PASS/FAIL)
+   [ ] Click Test Email.
+       (PASS/FAIL) "Test email sent successfully" dialog AND the message arrives
+       in the recipient inbox. (On failure, the exact SMTP error is shown.)
+
+--------------------------------------------------------------------------------
+ 8. Monitoring mode + flashing button + live status
+--------------------------------------------------------------------------------
+   [ ] After a successful scan, a large flashing "START MONITORING" button is
+       visible below the table (its frame alternates yellow/white ~2x/sec). (PASS/FAIL)
+   [ ] Settings -> Check interval = 15 (seconds) for a faster test.
+   [ ] Click START MONITORING. App switches to the Monitor tab.
+       (PASS/FAIL) The 8080 host shows green "● UP"; summary shows UP count.
+
+--------------------------------------------------------------------------------
+ 9. Simulate a host going DOWN and verify the email alert
+--------------------------------------------------------------------------------
+ Method 1 (no admin) — stop the listener:
+   [ ] In the listener PowerShell window press Ctrl+C (port 8080 closes).
+ Method 2 (admin) — block the port with Windows Firewall:
+   [ ] New-NetFirewallRule -DisplayName "NetWatch test 8080" -Direction Inbound `
+         -Action Block -Protocol TCP -LocalPort 8080
+       (afterwards remove with:
+        Remove-NetFirewallRule -DisplayName "NetWatch test 8080")
+
+   [ ] Watch the Monitor tab. After TWO consecutive checks (~2 intervals),
+       the host turns red "● DOWN".                       (PASS/FAIL anti-flap: it
+       does NOT flip to DOWN after a single missed check.)
+   [ ] A DOWN entry appears in the event log with a timestamp. (PASS/FAIL)
+   [ ] If email is enabled: exactly ONE email arrives. Subject contains the host IP;
+       body contains hostname, open ports and timestamp.   (PASS/FAIL)
+   [ ] Leave it down several more intervals -> NO further emails (debounce). (PASS/FAIL)
+
+ Recovery:
+   [ ] Restart the listener (re-run the snippet in section 3) or remove the
+       firewall rule. Within ~1 interval the host returns to green "● UP" and an
+       UP entry is logged.                                  (PASS/FAIL)
+   [ ] Take it DOWN again -> a NEW email is sent (re-arm after recovery). (PASS/FAIL)
+   [ ] Click "Stop Monitoring" -> status "Monitoring stopped"; flashing button returns.
+
+--------------------------------------------------------------------------------
+10. Save Site / Load Site / Resume
+--------------------------------------------------------------------------------
+   [ ] Settings -> Site name = "VMTest" -> Save Site -> save VMTest.site.
+       (PASS/FAIL) File created; open it in Notepad and confirm it contains the
+       range, ports, email config, host list, and the monitoring event log.
+   [ ] Start monitoring again, then Save Site once more (captures running state).
+   [ ] Close NetWatch entirely. Reopen it.
+   [ ] Settings -> Load Site -> VMTest.site.
+       (PASS/FAIL) Host list and event log are restored exactly.
+       (PASS/FAIL) Because monitoring was running when saved, a prompt offers to
+       RESUME — choose Yes and confirm monitoring continues.
+
+--------------------------------------------------------------------------------
+11. HTML report
+--------------------------------------------------------------------------------
+   [ ] Settings -> Generate Report.
+       (PASS/FAIL) Report_VMTest_<timestamp>.html is created next to the exe AND
+       opens in the default browser.
+   [ ] The report shows: scan date/time, network range, ports scanned, a host
+       table (IP/hostname/vendor/MAC/ports + status), and the UP/DOWN event log.
+   [ ] Open the .html on a machine with no internet -> still renders fully
+       (CSS is embedded; it is a single standalone file).   (PASS/FAIL)
+
+--------------------------------------------------------------------------------
+12. Logging
+--------------------------------------------------------------------------------
+   [ ] Open app.log (next to the exe). Confirm timestamped INFO/WARN/ERROR lines
+       for: app start, scan start/end, monitoring start/stop, host status changes,
+       email attempts.                                       (PASS/FAIL)
+
+--------------------------------------------------------------------------------
+ Final acceptance checklist
+--------------------------------------------------------------------------------
+   [ ] Runs on a fresh Windows 10/11 VM with nothing else installed.
+   [ ] UI text switches instantly between English and Spanish.
+   [ ] A /24 (254 hosts) x 3 ports completes in a few minutes; scan is cancellable.
+   [ ] Flashing button is clearly visible and functional.
+   [ ] Email alerts are sent when a monitored host goes down (one per DOWN event).
+   [ ] Saved .site files load correctly and restore all data (incl. event log).
+   [ ] HTML reports generate and open in the default browser.
+================================================================================
