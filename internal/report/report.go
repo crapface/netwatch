@@ -16,9 +16,11 @@ type hostRow struct {
 	StatusClass string
 	IP          string
 	Hostname    string
+	Label       string
 	Vendor      string
 	MAC         string
 	Ports       string
+	Notes       string
 }
 
 type eventRow struct {
@@ -49,9 +51,11 @@ type reportData struct {
 	ColStatus  string
 	ColIP      string
 	ColHost    string
+	ColLabel   string
 	ColVendor  string
 	ColMAC     string
 	ColPorts   string
+	ColNotes   string
 	EvTime     string
 	EvHost     string
 	EvEvent    string
@@ -98,9 +102,11 @@ func Generate(p *model.SiteProfile, outPath, appVersion string) error {
 		ColStatus:  i18n.T("col.status"),
 		ColIP:      i18n.T("col.ip"),
 		ColHost:    i18n.T("col.hostname"),
+		ColLabel:   i18n.T("col.label"),
 		ColVendor:  i18n.T("col.vendor"),
 		ColMAC:     i18n.T("col.mac"),
 		ColPorts:   i18n.T("col.ports"),
+		ColNotes:   i18n.T("col.notes"),
 		EvTime:     i18n.T("evcol.time"),
 		EvHost:     i18n.T("evcol.host"),
 		EvEvent:    i18n.T("evcol.event"),
@@ -119,9 +125,11 @@ func Generate(p *model.SiteProfile, outPath, appVersion string) error {
 			StatusClass: cls,
 			IP:          h.IP,
 			Hostname:    h.Hostname,
+			Label:       h.Label,
 			Vendor:      h.Vendor,
 			MAC:         h.MAC,
-			Ports:       h.PortsString(),
+			Ports:       model.PortsLabeled(h.OpenPorts, p.PortLabels),
+			Notes:       h.Notes,
 		})
 	}
 	for _, e := range p.Events {
@@ -206,8 +214,8 @@ const reportTemplate = `<!DOCTYPE html>
   <h2>{{.HostsH}}</h2>
   <table>
     <thead><tr>
-      <th>{{.ColStatus}}</th><th>{{.ColIP}}</th><th>{{.ColHost}}</th>
-      <th>{{.ColVendor}}</th><th>{{.ColMAC}}</th><th>{{.ColPorts}}</th>
+      <th>{{.ColStatus}}</th><th>{{.ColIP}}</th><th>{{.ColHost}}</th><th>{{.ColLabel}}</th>
+      <th>{{.ColVendor}}</th><th>{{.ColMAC}}</th><th>{{.ColPorts}}</th><th>{{.ColNotes}}</th>
     </tr></thead>
     <tbody>
     {{range .Hosts}}
@@ -215,9 +223,11 @@ const reportTemplate = `<!DOCTYPE html>
         <td><span class="pill {{.StatusClass}}">{{.StatusText}}</span></td>
         <td><code>{{.IP}}</code></td>
         <td>{{.Hostname}}</td>
+        <td>{{.Label}}</td>
         <td>{{.Vendor}}</td>
         <td><code>{{.MAC}}</code></td>
         <td><code>{{.Ports}}</code></td>
+        <td>{{.Notes}}</td>
       </tr>
     {{end}}
     </tbody>

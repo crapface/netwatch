@@ -10,18 +10,41 @@ import (
 	"netwatch/internal/model"
 )
 
+// Column indices for the host table.
+const (
+	colStatus = iota
+	colIP
+	colHostname
+	colLabel
+	colVendor
+	colMAC
+	colPorts
+	colNotes
+	colID
+	hostColCount
+)
+
 // HostModel is a walk TableModel backed by the discovered host list. It is
 // shared by both the Scanner and Monitor table views.
 type HostModel struct {
 	walk.TableModelBase
-	mu    sync.Mutex
-	items []model.Host
-	index map[string]int
+	mu         sync.Mutex
+	items      []model.Host
+	index      map[string]int
+	portLabels map[int]string
 }
 
 // NewHostModel returns an empty host model.
 func NewHostModel() *HostModel {
-	return &HostModel{index: map[string]int{}}
+	return &HostModel{index: map[string]int{}, portLabels: map[int]string{}}
+}
+
+// SetPortLabels updates the port->label map used to render the Ports column.
+func (m *HostModel) SetPortLabels(labels map[int]string) {
+	m.mu.Lock()
+	m.portLabels = labels
+	m.mu.Unlock()
+	m.PublishRowsReset()
 }
 
 // SetItems replaces the entire host list and refreshes the views.
@@ -87,19 +110,23 @@ func (m *HostModel) Value(row, col int) interface{} {
 	}
 	h := m.items[row]
 	switch col {
-	case 0:
+	case colStatus:
 		return statusLabel(h.Status)
-	case 1:
+	case colIP:
 		return h.IP
-	case 2:
+	case colHostname:
 		return h.Hostname
-	case 3:
+	case colLabel:
+		return h.Label
+	case colVendor:
 		return h.Vendor
-	case 4:
+	case colMAC:
 		return h.MAC
-	case 5:
-		return h.PortsString()
-	case 6:
+	case colPorts:
+		return model.PortsLabeled(h.OpenPorts, m.portLabels)
+	case colNotes:
+		return h.Notes
+	case colID:
 		return h.ID
 	}
 	return ""
@@ -109,9 +136,9 @@ func (m *HostModel) Value(row, col int) interface{} {
 func statusLabel(s string) string {
 	switch s {
 	case model.StatusUp:
-		return "● " + i18n.T("status.up") // ● UP
+		return "● " + i18n.T("status.up")
 	case model.StatusDown:
-		return "● " + i18n.T("status.down") // ● DOWN
+		return "● " + i18n.T("status.down")
 	default:
 		return i18n.T("status.unknown")
 	}

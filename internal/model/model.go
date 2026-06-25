@@ -6,6 +6,7 @@ package model
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,9 +31,12 @@ type Host struct {
 	IP        string `json:"ip"`         // IPv4 address
 	Hostname  string `json:"hostname"`   // reverse-DNS name (may be empty)
 	MAC       string `json:"mac"`        // colon-separated MAC (may be empty for routed hosts)
-	Vendor    string `json:"vendor"`     // OUI vendor (may be empty)
+	Vendor    string `json:"vendor"`     // OUI vendor (may be empty; user-editable)
+	Label     string `json:"label"`      // user-assigned friendly name
+	Notes     string `json:"notes"`      // free-form user notes
 	OpenPorts []int  `json:"open_ports"` // ports that accepted a TCP connection
 	Status    string `json:"status"`     // monitoring status: up|down|unknown
+	Manual    bool   `json:"manual"`     // true if added by hand (force-included, never dropped)
 
 	// Monitor runtime state — persisted so a saved Site can resume cleanly.
 	ConsecutiveMisses int       `json:"consecutive_misses"`
@@ -97,6 +101,7 @@ type SiteProfile struct {
 	Name          string         `json:"name"`
 	CIDR          string         `json:"cidr"`
 	Ports         []int          `json:"ports"`
+	PortLabels    map[int]string `json:"port_labels"` // port -> friendly label (e.g. 8080 -> "Door Controller")
 	Email         EmailConfig    `json:"email"`
 	Hosts         []Host         `json:"hosts"`
 	Events        []MonitorEvent `json:"events"`
@@ -116,6 +121,7 @@ func DefaultProfile() *SiteProfile {
 		Name:          "Untitled",
 		CIDR:          "",
 		Ports:         []int{8080, 3000},
+		PortLabels:    map[int]string{},
 		Email: EmailConfig{
 			Port:    587,
 			TLSMode: "starttls",
@@ -143,4 +149,27 @@ func NormalizePorts(ports []int) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// PortLabelText renders a single port with its label if one exists,
+// e.g. "8080 (Door Controller)" or just "8080".
+func PortLabelText(port int, labels map[int]string) string {
+	if labels != nil {
+		if l, ok := labels[port]; ok && strings.TrimSpace(l) != "" {
+			return fmt.Sprintf("%d (%s)", port, l)
+		}
+	}
+	return strconv.Itoa(port)
+}
+
+// PortsLabeled renders a list of ports with their labels, comma-separated.
+func PortsLabeled(ports []int, labels map[int]string) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		parts[i] = PortLabelText(p, labels)
+	}
+	return strings.Join(parts, ", ")
 }

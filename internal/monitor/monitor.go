@@ -189,6 +189,11 @@ func (m *Monitor) checkAll(ctx context.Context) {
 }
 
 func (m *Monitor) checkOne(ctx context.Context, st *hostState) {
+	// A manually-added host with no ports can't be probed; leave it unknown
+	// and never flag it DOWN.
+	if len(st.ports) == 0 {
+		return
+	}
 	reachable := probe(ctx, st.ip, st.ports, m.cfg.Timeout)
 	if ctx.Err() != nil {
 		return

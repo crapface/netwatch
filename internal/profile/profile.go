@@ -58,5 +58,8 @@ func Load(path string) (*model.SiteProfile, error) {
 	if p.Events == nil {
 		p.Events = []model.MonitorEvent{}
 	}
+	if p.PortLabels == nil {
+		p.PortLabels = map[int]string{}
+	}
 	return p, nil
 }

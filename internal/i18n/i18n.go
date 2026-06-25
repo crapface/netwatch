@@ -15,6 +15,9 @@ var enJSON []byte
 //go:embed es.json
 var esJSON []byte
 
+//go:embed es_AR.json
+var esARJSON []byte
+
 var (
 	mu   sync.RWMutex
 	cur  = "en"
@@ -24,10 +27,13 @@ var (
 func init() {
 	en := map[string]string{}
 	es := map[string]string{}
+	esAR := map[string]string{}
 	_ = json.Unmarshal(enJSON, &en)
 	_ = json.Unmarshal(esJSON, &es)
+	_ = json.Unmarshal(esARJSON, &esAR)
 	maps["en"] = en
 	maps["es"] = es
+	maps["es_AR"] = esAR
 }
 
 // SetLang switches the active language ("en" or "es"). Unknown codes are ignored.
@@ -47,13 +53,15 @@ func Lang() string {
 }
 
 // Codes returns the supported language codes in display order.
-func Codes() []string { return []string{"en", "es"} }
+func Codes() []string { return []string{"en", "es", "es_AR"} }
 
 // DisplayName returns the human label for a language code.
 func DisplayName(code string) string {
 	switch code {
 	case "es":
 		return "Español"
+	case "es_AR":
+		return "Español (AR)"
 	default:
 		return "English"
 	}

@@ -3,6 +3,32 @@
 All notable changes to NetWatch are documented here.
 This project bumps the `version` constant in `main.go` on every change.
 
+## [1.1.0] — 2026-06-25
+
+### Added
+- **Prominent toolbar** — Save Site / Load Site / Generate Report / About are now
+  always visible at the top of the window (in addition to the Settings tab).
+- **Manual hosts** — add a host by hand (IP + ports + label + notes) for devices
+  you know exist but the scan didn't surface; edit or remove any host. Manual hosts
+  are force-included and survive re-scans.
+- **Per-host Label and Notes** columns, editable via the Add/Edit host dialog and
+  included in saved Sites and HTML reports.
+- **Port labels** — name a port (e.g. `8080 → "Door Controller Web"`); labels show
+  in the port list, the host table's Ports column, alerts, and the report. Useful
+  for hunting specific access-control hosts.
+- **Argentine Spanish (es_AR)** as a third language alongside English and neutral
+  Spanish; switch instantly from the toolbar dropdown.
+- **About screen** with a professional bio and an embedded image (prefers an
+  external `about.jpg` next to the exe if present, else the bundled one).
+
+### Fixed / changed
+- **Vendor lookup** — added a "Re-resolve vendors" button and automatic
+  re-resolution after an OUI update or Site load, so vendor names populate on
+  already-scanned hosts (previously stayed blank until a re-scan). Re-resolution
+  also fills in MACs that weren't in the ARP cache during the scan.
+- Manual hosts with no ports are shown but never flagged DOWN (nothing to probe).
+- Vendor is now user-editable per host.
+
 ## [1.0.0] — 2026-06-24
 Initial release. Portable Windows port of the LanApp concept, rebuilt to spec.
 

@@ -4,12 +4,17 @@
 package ui
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg" // register JPEG decoder for the embedded About image
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +35,40 @@ import (
 	"netwatch/internal/scan"
 	"netwatch/internal/winexec"
 )
+
+//go:embed assets/about.jpg
+var aboutJPEG []byte
+
+// resumeText is the sanitized professional bio shown in the About dialog.
+// Kept free of internal hostnames/IPs per the public-repo policy.
+const resumeText = `Eric Pezoa
+Senior Systems Engineer — Location Intelligence Group / Digital & TECH, CBRE
+Phoenix, Arizona
+
+SUMMARY
+Senior systems engineer specializing in enterprise GIS, cloud infrastructure,
+and automation tooling. I design, deploy and operate high-availability ArcGIS
+Enterprise and ArcGIS Online environments, and build the internal tools that
+make large geospatial platforms observable and maintainable.
+
+CORE SKILLS
+• ArcGIS Enterprise (Portal / Server / Data Store, HA) and ArcGIS Online admin
+• Microsoft Azure — CLI-driven ops, Application Gateway, Key Vault, PostgreSQL
+• SAML / Microsoft Entra ID federation
+• Automation & tooling in Go and PowerShell; SQLite; single-file web dashboards
+• Model Context Protocol (MCP) servers and agentic workflows
+• Networking, monitoring and security hardening
+
+SELECTED WORK
+• Operate an ArcGIS Enterprise 11.5 high-availability portal for the enterprise.
+• Built internal troubleshooting and metrics tools — single-file HTML with OAuth
+  and versioned changelogs; Go + SQLite dashboards (Chart.js).
+• Authored automation and MCP services that wrap internal APIs for self-service.
+• NetWatch (this app) — a portable Windows LAN scanner & monitor (Go + lxn/walk).
+
+LINKS
+GitHub: github.com/crapface
+Full bio: lakes.pezoa.com/about`
 
 // App holds all GUI state.
 type App struct {
@@ -61,6 +100,11 @@ type App struct {
 
 // widgets keeps references to every control that must be retranslated or read.
 type widgets struct {
+	// toolbar
+	tbSave    *walk.PushButton
+	tbLoad    *walk.PushButton
+	tbReport  *walk.PushButton
+	tbAbout   *walk.PushButton
 	langLabel *walk.Label
 	langCombo *walk.ComboBox
 
@@ -68,17 +112,20 @@ type widgets struct {
 	tabMonitor  *walk.TabPage
 	tabSettings *walk.TabPage
 
-	rangeLabel   *walk.Label
-	rangeEdit    *walk.LineEdit
-	btnDetect    *walk.PushButton
-	btnScan      *walk.PushButton
-	btnCancel    *walk.PushButton
-	scanProgress *walk.ProgressBar
-	scanStatus   *walk.Label
-	hostTV       *walk.TableView
-	scanHint     *walk.Label
-	flashComp    *walk.Composite
-	btnStartMon  *walk.PushButton
+	rangeLabel    *walk.Label
+	rangeEdit     *walk.LineEdit
+	btnDetect     *walk.PushButton
+	btnScan       *walk.PushButton
+	btnCancel     *walk.PushButton
+	scanProgress  *walk.ProgressBar
+	scanStatus    *walk.Label
+	hostTV        *walk.TableView
+	btnAddHost    *walk.PushButton
+	btnEditHost   *walk.PushButton
+	btnRemoveHost *walk.PushButton
+	scanHint      *walk.Label
+	flashComp     *walk.Composite
+	btnStartMon   *walk.PushButton
 
 	monTV        *walk.TableView
 	btnStopMon   *walk.PushButton
@@ -87,13 +134,15 @@ type widgets struct {
 	monEventsLbl *walk.Label
 	eventTV      *walk.TableView
 
-	gbPorts      *walk.GroupBox
-	portsHint    *walk.Label
-	portsList    *walk.ListBox
-	portFieldLbl *walk.Label
-	portEdit     *walk.NumberEdit
-	btnAddPort   *walk.PushButton
-	btnRemPort   *walk.PushButton
+	gbPorts       *walk.GroupBox
+	portsHint     *walk.Label
+	portsList     *walk.ListBox
+	portFieldLbl  *walk.Label
+	portEdit      *walk.NumberEdit
+	portLabelLbl  *walk.Label
+	portLabelEdit *walk.LineEdit
+	btnAddPort    *walk.PushButton
+	btnRemPort    *walk.PushButton
 
 	gbScan       *walk.GroupBox
 	concLabel    *walk.Label
@@ -129,6 +178,7 @@ type widgets struct {
 
 	gbOUI        *walk.GroupBox
 	btnUpdateOUI *walk.PushButton
+	btnReresolve *walk.PushButton
 	ouiStatus    *walk.Label
 
 	gbProfile     *walk.GroupBox
@@ -162,13 +212,15 @@ func Run(appDir, version string) error {
 
 func hostColumns() []TableViewColumn {
 	return []TableViewColumn{
-		{Title: "Status", Width: 96},
-		{Title: "IP", Width: 120},
-		{Title: "Hostname", Width: 210},
-		{Title: "Vendor", Width: 190},
-		{Title: "MAC", Width: 140},
-		{Title: "Ports", Width: 130},
-		{Title: "ID", Width: 140},
+		{Title: "Status", Width: 92},
+		{Title: "IP", Width: 116},
+		{Title: "Hostname", Width: 170},
+		{Title: "Label", Width: 150},
+		{Title: "Vendor", Width: 160},
+		{Title: "MAC", Width: 134},
+		{Title: "Ports", Width: 150},
+		{Title: "Notes", Width: 170},
+		{Title: "ID", Width: 120},
 	}
 }
 
@@ -182,26 +234,35 @@ func eventColumns() []TableViewColumn {
 }
 
 func (a *App) build() MainWindow {
+	codes := i18n.Codes()
+	langNames := make([]string, len(codes))
+	for i, c := range codes {
+		langNames[i] = i18n.DisplayName(c)
+	}
 	return MainWindow{
 		AssignTo: &a.mw,
 		Title:    i18n.T("app.title"),
-		MinSize:  Size{Width: 900, Height: 620},
-		Size:     Size{Width: 1060, Height: 740},
+		MinSize:  Size{Width: 980, Height: 640},
+		Size:     Size{Width: 1140, Height: 760},
 		Layout:   VBox{},
 		Children: []Widget{
-			// Top bar: language selector (always visible -> instant switch).
+			// Always-visible toolbar: Save / Load / Report / About + language.
 			Composite{
-				Layout: HBox{MarginsZero: true},
+				Layout: HBox{},
 				Children: []Widget{
+					PushButton{AssignTo: &a.w.tbSave, Text: "Save Site", OnClicked: a.onSave},
+					PushButton{AssignTo: &a.w.tbLoad, Text: "Load Site", OnClicked: a.onLoad},
+					PushButton{AssignTo: &a.w.tbReport, Text: "Generate Report", OnClicked: a.onReport},
+					PushButton{AssignTo: &a.w.tbAbout, Text: "About", OnClicked: a.onAbout},
 					HSpacer{},
 					Label{AssignTo: &a.w.langLabel, Text: "Language:"},
 					ComboBox{
 						AssignTo:              &a.w.langCombo,
 						Editable:              false,
-						Model:                 []string{i18n.DisplayName("en"), i18n.DisplayName("es")},
+						Model:                 langNames,
 						OnCurrentIndexChanged: a.onLangChanged,
 						MinSize:               Size{Width: 150},
-						MaxSize:               Size{Width: 170},
+						MaxSize:               Size{Width: 180},
 					},
 				},
 			},
@@ -242,7 +303,16 @@ func (a *App) scannerPage() TabPage {
 				Columns:          hostColumns(),
 				StyleCell:        a.styleHostCell,
 				ColumnsOrderable: true,
-				MinSize:          Size{Height: 280},
+				MinSize:          Size{Height: 250},
+			},
+			Composite{
+				Layout: HBox{},
+				Children: []Widget{
+					PushButton{AssignTo: &a.w.btnAddHost, Text: "Add host", OnClicked: a.onAddHost},
+					PushButton{AssignTo: &a.w.btnEditHost, Text: "Edit host", OnClicked: a.onEditHost},
+					PushButton{AssignTo: &a.w.btnRemoveHost, Text: "Remove host", OnClicked: a.onRemoveHost},
+					HSpacer{},
+				},
 			},
 			Label{AssignTo: &a.w.scanHint, Text: ""},
 			Composite{
@@ -283,14 +353,14 @@ func (a *App) monitorPage() TabPage {
 				Model:     a.hostModel,
 				Columns:   hostColumns(),
 				StyleCell: a.styleHostCell,
-				MinSize:   Size{Height: 230},
+				MinSize:   Size{Height: 220},
 			},
 			Label{AssignTo: &a.w.monEventsLbl, Text: "Monitoring event log"},
 			TableView{
 				AssignTo: &a.w.eventTV,
 				Model:    a.eventModel,
 				Columns:  eventColumns(),
-				MinSize:  Size{Height: 160},
+				MinSize:  Size{Height: 150},
 			},
 		},
 	}
@@ -305,7 +375,6 @@ func (a *App) settingsPage() TabPage {
 			ScrollView{
 				Layout: VBox{},
 				Children: []Widget{
-					// Ports
 					GroupBox{
 						AssignTo: &a.w.gbPorts,
 						Title:    "Scan ports",
@@ -315,7 +384,7 @@ func (a *App) settingsPage() TabPage {
 							Composite{
 								Layout: HBox{},
 								Children: []Widget{
-									ListBox{AssignTo: &a.w.portsList, MinSize: Size{Width: 130, Height: 96}},
+									ListBox{AssignTo: &a.w.portsList, MinSize: Size{Width: 220, Height: 110}},
 									Composite{
 										Layout: VBox{},
 										Children: []Widget{
@@ -324,6 +393,8 @@ func (a *App) settingsPage() TabPage {
 												Children: []Widget{
 													Label{AssignTo: &a.w.portFieldLbl, Text: "Port:"},
 													NumberEdit{AssignTo: &a.w.portEdit, Decimals: 0, MinValue: 1, MaxValue: 65535, MinSize: Size{Width: 90}},
+													Label{AssignTo: &a.w.portLabelLbl, Text: "Label:"},
+													LineEdit{AssignTo: &a.w.portLabelEdit, MinSize: Size{Width: 160}},
 													PushButton{AssignTo: &a.w.btnAddPort, Text: "Add", OnClicked: a.onAddPort},
 												},
 											},
@@ -336,7 +407,6 @@ func (a *App) settingsPage() TabPage {
 							},
 						},
 					},
-					// Scan tuning
 					GroupBox{
 						AssignTo: &a.w.gbScan,
 						Title:    "Scan tuning",
@@ -350,7 +420,6 @@ func (a *App) settingsPage() TabPage {
 							NumberEdit{AssignTo: &a.w.retriesEdit, Decimals: 0, MinValue: 0, MaxValue: 10},
 						},
 					},
-					// Email
 					GroupBox{
 						AssignTo: &a.w.gbEmail,
 						Title:    "Email notifications (SMTP)",
@@ -383,7 +452,6 @@ func (a *App) settingsPage() TabPage {
 							Label{AssignTo: &a.w.warnLabel, Text: "", ColumnSpan: 2, TextColor: walk.RGB(200, 60, 60)},
 						},
 					},
-					// Monitoring
 					GroupBox{
 						AssignTo: &a.w.gbMon,
 						Title:    "Monitoring",
@@ -393,18 +461,17 @@ func (a *App) settingsPage() TabPage {
 							NumberEdit{AssignTo: &a.w.intervalEdit, Decimals: 0, MinValue: 5, MaxValue: 86400},
 						},
 					},
-					// OUI
 					GroupBox{
 						AssignTo: &a.w.gbOUI,
 						Title:    "Vendor database (IEEE OUI)",
 						Layout:   HBox{},
 						Children: []Widget{
 							PushButton{AssignTo: &a.w.btnUpdateOUI, Text: "Update OUI Data", OnClicked: a.onUpdateOUI},
+							PushButton{AssignTo: &a.w.btnReresolve, Text: "Re-resolve vendors", OnClicked: a.onReresolve},
 							Label{AssignTo: &a.w.ouiStatus, Text: ""},
 							HSpacer{},
 						},
 					},
-					// Profile
 					GroupBox{
 						AssignTo: &a.w.gbProfile,
 						Title:    "Site profile",
@@ -442,14 +509,13 @@ func (a *App) postCreate() {
 
 	_ = os.MkdirAll(filepath.Join(a.appDir, "profiles"), 0o755)
 
-	// Try to load an existing OUI cache.
 	if n, err := oui.Load(a.ouiCache); err == nil && n > 0 {
 		applog.Info("oui: loaded %d prefixes from cache", n)
 	}
 
 	a.setTLSCombo()
-	a.syncUIFromProfile() // pushes defaults into widgets + retranslate
-	a.onDetect()          // async auto-detect of the active subnet
+	a.syncUIFromProfile()
+	a.onDetect()
 	a.renderMonStatus()
 }
 
@@ -474,7 +540,7 @@ func (a *App) setScanning(v bool, cancel context.CancelFunc) {
 }
 
 func (a *App) styleHostCell(style *walk.CellStyle) {
-	if style.Col() != 0 {
+	if style.Col() != colStatus {
 		return
 	}
 	switch a.hostModel.StatusOf(style.Row()) {
@@ -523,8 +589,10 @@ func (a *App) setLangCombo(code string) {
 }
 
 func (a *App) langIndex(code string) int {
-	if code == "es" {
-		return 1
+	for i, c := range i18n.Codes() {
+		if c == code {
+			return i
+		}
 	}
 	return 0
 }
@@ -541,6 +609,25 @@ func (a *App) countStatuses() (up, down, unknown int) {
 		}
 	}
 	return
+}
+
+func contains(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func parsePorts(s string) []int {
+	var out []int
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == ';' || r == '\t' }) {
+		if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil {
+			out = append(out, n)
+		}
+	}
+	return model.NormalizePorts(out)
 }
 
 // ---- sync ------------------------------------------------------------------
@@ -589,6 +676,9 @@ func (a *App) syncUIFromProfile() {
 	_ = a.w.from.SetText(e.From)
 	_ = a.w.to.SetText(e.To)
 	_ = a.w.portEdit.SetValue(8080)
+	if a.prof.PortLabels == nil {
+		a.prof.PortLabels = map[int]string{}
+	}
 	a.refreshPorts()
 	a.retranslate()
 }
@@ -597,15 +687,50 @@ func (a *App) refreshPorts() {
 	a.prof.Ports = model.NormalizePorts(a.prof.Ports)
 	items := make([]string, len(a.prof.Ports))
 	for i, p := range a.prof.Ports {
-		items[i] = itoa(p)
+		if lbl := strings.TrimSpace(a.prof.PortLabels[p]); lbl != "" {
+			items[i] = fmt.Sprintf("%d — %s", p, lbl)
+		} else {
+			items[i] = itoa(p)
+		}
 	}
 	_ = a.w.portsList.SetModel(items)
+	a.hostModel.SetPortLabels(a.prof.PortLabels)
+}
+
+// reresolveVendors re-fetches the ARP table and fills missing MAC/vendor info
+// for the current hosts (so vendors appear after an OUI update, or for hosts
+// whose ARP entry wasn't ready during the scan). Returns hosts with a vendor.
+func (a *App) reresolveVendors() int {
+	arp := netutil.ARPTable()
+	withVendor := 0
+	for i := range a.prof.Hosts {
+		h := &a.prof.Hosts[i]
+		if h.MAC == "" {
+			if mac, ok := arp[h.IP]; ok {
+				h.MAC = mac
+			}
+		}
+		if h.MAC != "" && h.Vendor == "" {
+			if v := oui.VendorOf(h.MAC); v != "" {
+				h.Vendor = v
+			}
+		}
+		if h.Vendor != "" {
+			withVendor++
+		}
+	}
+	a.hostModel.SetItems(a.prof.Hosts)
+	return withVendor
 }
 
 // ---- retranslate -----------------------------------------------------------
 
 func (a *App) retranslate() {
 	_ = a.mw.SetTitle(i18n.T("app.title"))
+	a.w.tbSave.SetText(i18n.T("set.save_site"))
+	a.w.tbLoad.SetText(i18n.T("set.load_site"))
+	a.w.tbReport.SetText(i18n.T("set.gen_report"))
+	a.w.tbAbout.SetText(i18n.T("about.button"))
 	a.w.langLabel.SetText(i18n.T("lang.label"))
 
 	_ = a.w.tabScanner.SetTitle(i18n.T("tab.scanner"))
@@ -616,6 +741,9 @@ func (a *App) retranslate() {
 	a.w.btnDetect.SetText(i18n.T("scan.detect"))
 	a.w.btnScan.SetText(i18n.T("scan.scan"))
 	a.w.btnCancel.SetText(i18n.T("scan.cancel"))
+	a.w.btnAddHost.SetText(i18n.T("host.add"))
+	a.w.btnEditHost.SetText(i18n.T("host.edit"))
+	a.w.btnRemoveHost.SetText(i18n.T("host.remove"))
 	a.w.btnStartMon.SetText(i18n.T("scan.start_monitoring"))
 
 	a.w.btnStopMon.SetText(i18n.T("mon.stop"))
@@ -624,6 +752,7 @@ func (a *App) retranslate() {
 	a.w.gbPorts.SetTitle(i18n.T("set.ports_group"))
 	a.w.portsHint.SetText(i18n.T("set.ports_hint"))
 	a.w.portFieldLbl.SetText(i18n.T("set.port_field"))
+	a.w.portLabelLbl.SetText(i18n.T("set.port_label_field"))
 	a.w.btnAddPort.SetText(i18n.T("set.add_port"))
 	a.w.btnRemPort.SetText(i18n.T("set.remove_port"))
 
@@ -650,6 +779,7 @@ func (a *App) retranslate() {
 
 	a.w.gbOUI.SetTitle(i18n.T("set.oui_group"))
 	a.w.btnUpdateOUI.SetText(i18n.T("set.update_oui"))
+	a.w.btnReresolve.SetText(i18n.T("set.reresolve"))
 
 	a.w.gbProfile.SetTitle(i18n.T("set.profile_group"))
 	a.w.siteNameLabel.SetText(i18n.T("set.site_name"))
@@ -659,9 +789,8 @@ func (a *App) retranslate() {
 
 	a.setTLSCombo()
 	a.setColumnTitles()
-	a.hostModel.PublishRowsReset() // re-render status text in the new language
+	a.hostModel.PublishRowsReset()
 
-	// Dynamic / stateful labels.
 	if oui.Loaded() {
 		a.w.ouiStatus.SetText(i18n.Tf("set.oui_loaded", oui.Count()))
 	} else {
@@ -681,8 +810,8 @@ func (a *App) retranslate() {
 
 func (a *App) setColumnTitles() {
 	host := []string{
-		i18n.T("col.status"), i18n.T("col.ip"), i18n.T("col.hostname"),
-		i18n.T("col.vendor"), i18n.T("col.mac"), i18n.T("col.ports"), i18n.T("col.id"),
+		i18n.T("col.status"), i18n.T("col.ip"), i18n.T("col.hostname"), i18n.T("col.label"),
+		i18n.T("col.vendor"), i18n.T("col.mac"), i18n.T("col.ports"), i18n.T("col.notes"), i18n.T("col.id"),
 	}
 	for _, tv := range []*walk.TableView{a.w.hostTV, a.w.monTV} {
 		if tv == nil {
@@ -724,9 +853,11 @@ func (a *App) onLangChanged() {
 	if a.suppressLang {
 		return
 	}
+	codes := i18n.Codes()
+	idx := a.w.langCombo.CurrentIndex()
 	code := "en"
-	if a.w.langCombo.CurrentIndex() == 1 {
-		code = "es"
+	if idx >= 0 && idx < len(codes) {
+		code = codes[idx]
 	}
 	i18n.SetLang(code)
 	a.prof.Language = code
@@ -811,14 +942,31 @@ func (a *App) applyScan(hosts []model.Host, runErr error, total int, dur time.Du
 	a.w.btnDetect.SetEnabled(true)
 	a.w.scanProgress.SetValue(total)
 
-	a.prof.Hosts = hosts
+	// Merge: keep manually-added hosts that the scan didn't rediscover.
+	merged := hosts
+	for _, old := range a.prof.Hosts {
+		if !old.Manual {
+			continue
+		}
+		found := false
+		for _, h := range hosts {
+			if h.IP == old.IP {
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = append(merged, old)
+		}
+	}
+	a.prof.Hosts = merged
 	a.prof.LastScan = model.ScanInfo{
 		Date:  time.Now(),
 		CIDR:  strings.TrimSpace(a.w.rangeEdit.Text()),
 		Ports: append([]int(nil), a.prof.Ports...),
-		Count: len(hosts),
+		Count: len(merged),
 	}
-	a.hostModel.SetItems(hosts)
+	a.hostModel.SetItems(merged)
 
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):
@@ -832,7 +980,7 @@ func (a *App) applyScan(hosts []model.Host, runErr error, total int, dur time.Du
 		applog.Info("scan: complete, %d hosts in %s", len(hosts), dur)
 	}
 
-	if len(hosts) > 0 {
+	if len(a.prof.Hosts) > 0 {
 		a.w.scanHint.SetText(i18n.T("scan.hint_after"))
 		a.w.flashComp.SetVisible(true)
 		a.startFlash()
@@ -984,7 +1132,7 @@ func (a *App) buildEmail(ev model.MonitorEvent, ports []int) (string, string) {
 	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_site"), a.prof.Name)
 	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_host"), host)
 	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_ip"), ev.IP)
-	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_ports"), model.Host{OpenPorts: ports}.PortsString())
+	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_ports"), model.PortsLabeled(ports, a.prof.PortLabels))
 	fmt.Fprintf(&b, "%s: %s\n", i18n.T("email.lbl_time"), ev.Time.Format("2006-01-02 15:04:05 MST"))
 	if ev.Detail != "" {
 		fmt.Fprintf(&b, "\n%s\n", ev.Detail)
@@ -1038,9 +1186,19 @@ func (a *App) onUpdateOUI() {
 			}
 			applog.Info("oui: updated, %d prefixes", n)
 			a.w.ouiStatus.SetText(i18n.Tf("set.oui_loaded", n))
+			a.reresolveVendors() // fill vendors on already-scanned hosts
 			a.info(i18n.Tf("msg.oui_done", n))
 		})
 	}()
+}
+
+func (a *App) onReresolve() {
+	if !oui.Loaded() {
+		a.errBox(i18n.T("set.oui_none"))
+		return
+	}
+	n := a.reresolveVendors()
+	a.info(i18n.Tf("msg.reresolved", n))
 }
 
 // ---- ports -----------------------------------------------------------------
@@ -1051,14 +1209,22 @@ func (a *App) onAddPort() {
 		a.errBox(i18n.T("msg.need_port"))
 		return
 	}
-	for _, e := range a.prof.Ports {
-		if e == p {
-			a.info(i18n.T("msg.port_exists"))
-			return
-		}
+	if a.prof.PortLabels == nil {
+		a.prof.PortLabels = map[int]string{}
 	}
-	a.prof.Ports = append(a.prof.Ports, p)
+	exists := contains(a.prof.Ports, p)
+	lbl := strings.TrimSpace(a.w.portLabelEdit.Text())
+	if !exists {
+		a.prof.Ports = append(a.prof.Ports, p)
+	}
+	if lbl != "" {
+		a.prof.PortLabels[p] = lbl
+	} else if exists {
+		a.info(i18n.T("msg.port_exists"))
+		return
+	}
 	a.refreshPorts()
+	_ = a.w.portLabelEdit.SetText("")
 }
 
 func (a *App) onRemovePort() {
@@ -1066,8 +1232,189 @@ func (a *App) onRemovePort() {
 	if idx < 0 || idx >= len(a.prof.Ports) {
 		return
 	}
+	p := a.prof.Ports[idx]
 	a.prof.Ports = append(a.prof.Ports[:idx], a.prof.Ports[idx+1:]...)
+	delete(a.prof.PortLabels, p)
 	a.refreshPorts()
+}
+
+// ---- manual hosts ----------------------------------------------------------
+
+func (a *App) onAddHost() {
+	h := model.Host{Status: model.StatusUnknown, Manual: true}
+	if !a.hostDialog("hd.add_title", &h, true) {
+		return
+	}
+	for _, e := range a.prof.Hosts {
+		if e.IP == h.IP {
+			a.errBox(i18n.T("msg.host_exists"))
+			return
+		}
+	}
+	if h.MAC != "" {
+		h.ID = h.MAC
+	} else {
+		h.ID = "ip:" + h.IP
+	}
+	a.prof.Hosts = append(a.prof.Hosts, h)
+	a.hostModel.SetItems(a.prof.Hosts)
+	a.reresolveVendors()
+	applog.Info("ui: manual host added %s (%s)", h.IP, h.Label)
+	a.w.flashComp.SetVisible(true)
+	a.startFlash()
+}
+
+func (a *App) onEditHost() {
+	idx := a.w.hostTV.CurrentIndex()
+	if idx < 0 || idx >= len(a.prof.Hosts) {
+		return
+	}
+	h := a.prof.Hosts[idx]
+	if !a.hostDialog("hd.edit_title", &h, false) {
+		return
+	}
+	a.prof.Hosts[idx] = h
+	a.hostModel.SetItems(a.prof.Hosts)
+}
+
+func (a *App) onRemoveHost() {
+	idx := a.w.hostTV.CurrentIndex()
+	if idx < 0 || idx >= len(a.prof.Hosts) {
+		return
+	}
+	applog.Info("ui: host removed %s", a.prof.Hosts[idx].IP)
+	a.prof.Hosts = append(a.prof.Hosts[:idx], a.prof.Hosts[idx+1:]...)
+	a.hostModel.SetItems(a.prof.Hosts)
+}
+
+// hostDialog edits h in place. ipEditable controls whether the IP can change
+// (true when adding, false when editing). Returns true if the user accepted.
+func (a *App) hostDialog(titleKey string, h *model.Host, ipEditable bool) bool {
+	var dlg *walk.Dialog
+	var ipLE, labelLE, portsLE, vendorLE *walk.LineEdit
+	var notesTE *walk.TextEdit
+	var okPB, cancelPB *walk.PushButton
+
+	cmd, _ := Dialog{
+		AssignTo:      &dlg,
+		Title:         i18n.T(titleKey),
+		MinSize:       Size{Width: 480, Height: 380},
+		Layout:        VBox{},
+		DefaultButton: &okPB,
+		CancelButton:  &cancelPB,
+		Children: []Widget{
+			Composite{
+				Layout: Grid{Columns: 2},
+				Children: []Widget{
+					Label{Text: i18n.T("hd.ip")},
+					LineEdit{AssignTo: &ipLE, Text: h.IP, ReadOnly: !ipEditable},
+					Label{Text: i18n.T("hd.label")},
+					LineEdit{AssignTo: &labelLE, Text: h.Label},
+					Label{Text: i18n.T("hd.ports")},
+					LineEdit{AssignTo: &portsLE, Text: model.Host{OpenPorts: h.OpenPorts}.PortsString()},
+					Label{Text: i18n.T("hd.vendor")},
+					LineEdit{AssignTo: &vendorLE, Text: h.Vendor},
+					Label{Text: i18n.T("hd.notes")},
+					TextEdit{AssignTo: &notesTE, Text: h.Notes, MinSize: Size{Height: 80}},
+				},
+			},
+			Composite{
+				Layout: HBox{},
+				Children: []Widget{
+					HSpacer{},
+					PushButton{AssignTo: &okPB, Text: i18n.T("gen.ok"), OnClicked: func() {
+						if ipEditable {
+							ip := net.ParseIP(strings.TrimSpace(ipLE.Text()))
+							if ip == nil || ip.To4() == nil {
+								a.errBox(i18n.T("msg.need_ip"))
+								return
+							}
+						}
+						dlg.Accept()
+					}},
+					PushButton{AssignTo: &cancelPB, Text: i18n.T("gen.cancel"), OnClicked: func() { dlg.Cancel() }},
+				},
+			},
+		},
+	}.Run(a.mw)
+
+	if cmd != walk.DlgCmdOK {
+		return false
+	}
+	if ipEditable {
+		h.IP = strings.TrimSpace(ipLE.Text())
+	}
+	h.Label = strings.TrimSpace(labelLE.Text())
+	h.Vendor = strings.TrimSpace(vendorLE.Text())
+	h.Notes = notesTE.Text()
+	h.OpenPorts = parsePorts(portsLE.Text())
+	return true
+}
+
+// ---- about -----------------------------------------------------------------
+
+func (a *App) loadAboutImage() walk.Image {
+	// Prefer an external about.jpg next to the exe (swap art without rebuilding).
+	ext := filepath.Join(a.appDir, "about.jpg")
+	if _, err := os.Stat(ext); err == nil {
+		if im, err := walk.NewImageFromFile(ext); err == nil {
+			return im
+		}
+	}
+	if img, _, err := image.Decode(bytes.NewReader(aboutJPEG)); err == nil {
+		if bmp, err := walk.NewBitmapFromImage(img); err == nil {
+			return bmp
+		}
+	}
+	return nil
+}
+
+func (a *App) onAbout() {
+	var dlg *walk.Dialog
+	var closePB *walk.PushButton
+
+	imgChildren := []Widget{}
+	if im := a.loadAboutImage(); im != nil {
+		imgChildren = append(imgChildren, ImageView{
+			Image:   im,
+			Mode:    ImageViewModeZoom,
+			MinSize: Size{Width: 300, Height: 420},
+		})
+	}
+	imgChildren = append(imgChildren, Composite{
+		Layout: VBox{},
+		Children: []Widget{
+			TextEdit{
+				Text:     resumeText,
+				ReadOnly: true,
+				VScroll:  true,
+				MinSize:  Size{Width: 420, Height: 380},
+			},
+			LinkLabel{
+				Text:            `Full bio: <a href="https://lakes.pezoa.com/about">lakes.pezoa.com/about</a>`,
+				OnLinkActivated: func(link *walk.LinkLabelLink) { _ = winexec.OpenBrowser(link.URL()) },
+			},
+		},
+	})
+
+	_, _ = Dialog{
+		AssignTo:      &dlg,
+		Title:         i18n.T("about.title"),
+		MinSize:       Size{Width: 800, Height: 560},
+		Layout:        VBox{},
+		DefaultButton: &closePB,
+		CancelButton:  &closePB,
+		Children: []Widget{
+			Composite{Layout: HBox{}, Children: imgChildren},
+			Composite{
+				Layout: HBox{},
+				Children: []Widget{
+					HSpacer{},
+					PushButton{AssignTo: &closePB, Text: i18n.T("gen.close"), OnClicked: func() { dlg.Accept() }},
+				},
+			},
+		},
+	}.Run(a.mw)
 }
 
 // ---- profile save / load ---------------------------------------------------
@@ -1109,7 +1456,6 @@ func (a *App) onLoad() {
 		return
 	}
 
-	// Stop any running monitor before swapping state.
 	if a.mon != nil {
 		a.mon.Stop()
 	}
@@ -1117,11 +1463,11 @@ func (a *App) onLoad() {
 	a.hostModel.SetItems(p.Hosts)
 	a.eventModel.SetItems(p.Events)
 	a.syncUIFromProfile()
+	a.reresolveVendors()
 	a.monStopped = false
 	a.prof.Monitoring.Running = false
 	a.w.btnStopMon.SetEnabled(false)
 
-	// Offer to resume if the Site was monitoring when saved.
 	wasRunning := p.Monitoring.Running
 	applog.Info("profile: loaded %s (%d hosts, %d events)", dlg.FilePath, len(p.Hosts), len(p.Events))
 	a.info(i18n.Tf("msg.loaded", filepath.Base(dlg.FilePath), len(p.Hosts), len(p.Events)))
