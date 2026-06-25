@@ -33,6 +33,7 @@ import (
 	"netwatch/internal/profile"
 	"netwatch/internal/report"
 	"netwatch/internal/scan"
+	"netwatch/internal/updates"
 	"netwatch/internal/winexec"
 )
 
@@ -105,6 +106,7 @@ type widgets struct {
 	tbLoad    *walk.PushButton
 	tbReport  *walk.PushButton
 	tbAbout   *walk.PushButton
+	tbUpdate  *walk.PushButton
 	langLabel *walk.Label
 	langCombo *walk.ComboBox
 
@@ -212,15 +214,15 @@ func Run(appDir, version string) error {
 
 func hostColumns() []TableViewColumn {
 	return []TableViewColumn{
-		{Title: "Status", Width: 92},
-		{Title: "IP", Width: 116},
-		{Title: "Hostname", Width: 170},
-		{Title: "Label", Width: 150},
-		{Title: "Vendor", Width: 160},
-		{Title: "MAC", Width: 134},
+		{Title: "Status", Width: 110},
+		{Title: "IP", Width: 110},
+		{Title: "Hostname", Width: 150},
+		{Title: "Label", Width: 140},
+		{Title: "Vendor", Width: 150},
+		{Title: "MAC", Width: 130},
 		{Title: "Ports", Width: 150},
-		{Title: "Notes", Width: 170},
-		{Title: "ID", Width: 120},
+		{Title: "Notes", Width: 150},
+		{Title: "ID", Width: 110},
 	}
 }
 
@@ -254,6 +256,7 @@ func (a *App) build() MainWindow {
 					PushButton{AssignTo: &a.w.tbLoad, Text: "Load Site", OnClicked: a.onLoad},
 					PushButton{AssignTo: &a.w.tbReport, Text: "Generate Report", OnClicked: a.onReport},
 					PushButton{AssignTo: &a.w.tbAbout, Text: "About", OnClicked: a.onAbout},
+					PushButton{AssignTo: &a.w.tbUpdate, Text: "Check for Updates", OnClicked: a.onCheckUpdates},
 					HSpacer{},
 					Label{AssignTo: &a.w.langLabel, Text: "Language:"},
 					ComboBox{
@@ -303,6 +306,7 @@ func (a *App) scannerPage() TabPage {
 				Columns:          hostColumns(),
 				StyleCell:        a.styleHostCell,
 				ColumnsOrderable: true,
+				OnItemActivated:  a.onEditHost, // double-click / Enter to edit details
 				MinSize:          Size{Height: 250},
 			},
 			Composite{
@@ -349,11 +353,12 @@ func (a *App) monitorPage() TabPage {
 			},
 			Label{AssignTo: &a.w.monStatus, Text: ""},
 			TableView{
-				AssignTo:  &a.w.monTV,
-				Model:     a.hostModel,
-				Columns:   hostColumns(),
-				StyleCell: a.styleHostCell,
-				MinSize:   Size{Height: 220},
+				AssignTo:        &a.w.monTV,
+				Model:           a.hostModel,
+				Columns:         hostColumns(),
+				StyleCell:       a.styleHostCell,
+				OnItemActivated: a.onEditHostMon, // double-click / Enter to edit details
+				MinSize:         Size{Height: 220},
 			},
 			Label{AssignTo: &a.w.monEventsLbl, Text: "Monitoring event log"},
 			TableView{
@@ -543,11 +548,16 @@ func (a *App) styleHostCell(style *walk.CellStyle) {
 	if style.Col() != colStatus {
 		return
 	}
+	// Fill the status cell so UP/DOWN is unmistakable, not just a small glyph.
 	switch a.hostModel.StatusOf(style.Row()) {
 	case model.StatusUp:
-		style.TextColor = walk.RGB(0, 150, 70)
+		style.TextColor = walk.RGB(0, 120, 55)
+		style.BackgroundColor = walk.RGB(216, 244, 226)
 	case model.StatusDown:
-		style.TextColor = walk.RGB(200, 40, 40)
+		style.TextColor = walk.RGB(185, 28, 28)
+		style.BackgroundColor = walk.RGB(255, 224, 224)
+	default:
+		style.TextColor = walk.RGB(90, 100, 112)
 	}
 }
 
@@ -731,6 +741,7 @@ func (a *App) retranslate() {
 	a.w.tbLoad.SetText(i18n.T("set.load_site"))
 	a.w.tbReport.SetText(i18n.T("set.gen_report"))
 	a.w.tbAbout.SetText(i18n.T("about.button"))
+	a.w.tbUpdate.SetText(i18n.T("upd.button"))
 	a.w.langLabel.SetText(i18n.T("lang.label"))
 
 	_ = a.w.tabScanner.SetTitle(i18n.T("tab.scanner"))
@@ -1264,8 +1275,13 @@ func (a *App) onAddHost() {
 	a.startFlash()
 }
 
-func (a *App) onEditHost() {
-	idx := a.w.hostTV.CurrentIndex()
+// onEditHost edits the row selected in the Scanner table (button or double-click).
+func (a *App) onEditHost() { a.editHostAt(a.w.hostTV.CurrentIndex()) }
+
+// onEditHostMon edits the row selected in the Monitor table (double-click).
+func (a *App) onEditHostMon() { a.editHostAt(a.w.monTV.CurrentIndex()) }
+
+func (a *App) editHostAt(idx int) {
 	if idx < 0 || idx >= len(a.prof.Hosts) {
 		return
 	}
@@ -1415,6 +1431,36 @@ func (a *App) onAbout() {
 			},
 		},
 	}.Run(a.mw)
+}
+
+// ---- check for updates -----------------------------------------------------
+
+func (a *App) onCheckUpdates() {
+	a.w.tbUpdate.SetEnabled(false)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		res, err := updates.Check(ctx, a.version)
+		a.mw.Synchronize(func() {
+			a.w.tbUpdate.SetEnabled(true)
+			if err != nil {
+				applog.Warn("updates: check failed: %v", err)
+				a.errBox(i18n.Tf("upd.failed", err.Error()))
+				return
+			}
+			if res.UpdateAvail {
+				applog.Info("updates: v%s available (have v%s)", res.Latest, a.version)
+				if walk.MsgBox(a.mw, i18n.T("dlg.info"), i18n.Tf("upd.available", res.Latest, a.version), walk.MsgBoxYesNo|walk.MsgBoxIconInformation) == win.IDYES {
+					if err := winexec.OpenBrowser(res.URL); err != nil {
+						applog.Warn("updates: open page failed: %v", err)
+					}
+				}
+			} else {
+				applog.Info("updates: up to date (v%s)", a.version)
+				a.info(i18n.Tf("upd.uptodate", a.version))
+			}
+		})
+	}()
 }
 
 // ---- profile save / load ---------------------------------------------------

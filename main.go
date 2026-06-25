@@ -13,7 +13,7 @@ import (
 )
 
 // version is stamped into reports and saved .site files. Bump on every change.
-const version = "1.1.0"
+const version = "1.1.1"
 
 // appDir returns the directory containing the executable (falls back to cwd
 // when run via `go run`).

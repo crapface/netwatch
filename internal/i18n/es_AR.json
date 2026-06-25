@@ -108,6 +108,10 @@
 
   "about.button": "Acerca de",
   "about.title": "Acerca de — NetWatch",
+  "upd.button": "Buscar actualizaciones",
+  "upd.uptodate": "Tenés la última versión (v%s).",
+  "upd.available": "Hay una actualización: v%s (tenés v%s).\n\n¿Abrís la página de descargas?",
+  "upd.failed": "Falló la búsqueda de actualizaciones:\n%s",
 
   "gen.ok": "Aceptar",
   "gen.cancel": "Cancelar",

@@ -3,6 +3,21 @@
 All notable changes to NetWatch are documented here.
 This project bumps the `version` constant in `main.go` on every change.
 
+## [1.1.1] — 2026-06-25
+
+### Added
+- **Check for Updates** — a toolbar button that asks GitHub for the latest release
+  and, if a newer version is out, offers to open the download page. It never
+  downloads or runs anything itself.
+
+### Fixed / changed
+- **Status column** now fills with a green/red background so UP/DOWN reads clearly
+  (previously just a small colored glyph); column widened.
+- **Double-click** (or press Enter on) a host row to edit its details — on both the
+  Scanner and Monitor tabs.
+- **HTML report** is now a light, printer-friendly theme with `@media print` rules
+  (repeating header row, no page-breaks mid-row, ink-friendly colors).
+
 ## [1.1.0] — 2026-06-25
 
 ### Added
