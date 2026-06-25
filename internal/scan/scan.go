@@ -201,11 +201,9 @@ func enrich(ctx context.Context, hosts []model.Host, cfg Config) {
 					h.Vendor = cfg.VendorOf(mac)
 				}
 			}
-			if h.MAC != "" {
-				h.ID = h.MAC
-			} else {
-				h.ID = "ip:" + h.IP
-			}
+			// ID is IP-based: a MAC can be shared across IPs (e.g. the gateway
+			// answers ARP for several addresses), which would collide.
+			h.ID = "ip:" + h.IP
 			sort.Ints(h.OpenPorts)
 		}(i)
 	}

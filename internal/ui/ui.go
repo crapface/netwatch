@@ -1262,14 +1262,11 @@ func (a *App) onAddHost() {
 			return
 		}
 	}
-	if h.MAC != "" {
-		h.ID = h.MAC
-	} else {
-		h.ID = "ip:" + h.IP
-	}
+	h.ID = "ip:" + h.IP // IP-based: unique even when MACs collide (shared gateway MAC)
 	a.prof.Hosts = append(a.prof.Hosts, h)
 	a.hostModel.SetItems(a.prof.Hosts)
 	a.reresolveVendors()
+	a.syncMonitorHosts()
 	applog.Info("ui: manual host added %s (%s)", h.IP, h.Label)
 	a.w.flashComp.SetVisible(true)
 	a.startFlash()
@@ -1291,6 +1288,7 @@ func (a *App) editHostAt(idx int) {
 	}
 	a.prof.Hosts[idx] = h
 	a.hostModel.SetItems(a.prof.Hosts)
+	a.syncMonitorHosts()
 }
 
 func (a *App) onRemoveHost() {
@@ -1301,6 +1299,15 @@ func (a *App) onRemoveHost() {
 	applog.Info("ui: host removed %s", a.prof.Hosts[idx].IP)
 	a.prof.Hosts = append(a.prof.Hosts[:idx], a.prof.Hosts[idx+1:]...)
 	a.hostModel.SetItems(a.prof.Hosts)
+	a.syncMonitorHosts()
+}
+
+// syncMonitorHosts pushes host-list edits into a running monitor so changes
+// (added/removed hosts, edited ports) take effect without a stop/start.
+func (a *App) syncMonitorHosts() {
+	if a.mon != nil && a.mon.Running() {
+		a.mon.SetHosts(a.prof.Hosts)
+	}
 }
 
 // hostDialog edits h in place. ipEditable controls whether the IP can change

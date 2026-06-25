@@ -3,6 +3,19 @@
 All notable changes to NetWatch are documented here.
 This project bumps the `version` constant in `main.go` on every change.
 
+## [1.1.2] — 2026-06-25
+
+### Fixed
+- **Host identity is now IP-based.** Hosts were keyed by MAC, but a shared MAC
+  (e.g. the gateway answering ARP for several IPs) made two hosts collide —
+  breaking per-row status updates (rows stuck on "—", wrong UP/DOWN counts) and
+  causing edits to land on the wrong row. IDs are now unique per IP.
+- **Port-less hosts are now monitored by ping.** A manually-added host with no
+  ports is checked via ICMP ping (no admin needed) instead of being skipped, so
+  "hosts I know exist" actually report UP/DOWN.
+- **Edits apply to a running monitor immediately** — adding, editing or removing a
+  host re-seeds the active monitor instead of waiting for a stop/start.
+
 ## [1.1.1] — 2026-06-25
 
 ### Added

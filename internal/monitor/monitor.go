@@ -15,6 +15,7 @@ import (
 	"netwatch/internal/applog"
 	"netwatch/internal/mailer"
 	"netwatch/internal/model"
+	"netwatch/internal/netutil"
 )
 
 // Config wires the monitor to the rest of the app via callbacks. All callbacks
@@ -189,12 +190,15 @@ func (m *Monitor) checkAll(ctx context.Context) {
 }
 
 func (m *Monitor) checkOne(ctx context.Context, st *hostState) {
-	// A manually-added host with no ports can't be probed; leave it unknown
-	// and never flag it DOWN.
+	// Hosts with scanned ports are checked by TCP connect (service liveness).
+	// Hosts with no ports (e.g. manually added "I know it's there") are checked
+	// by ICMP ping so they can still be monitored.
+	var reachable bool
 	if len(st.ports) == 0 {
-		return
+		reachable = netutil.Ping(st.ip, m.cfg.Timeout)
+	} else {
+		reachable = probe(ctx, st.ip, st.ports, m.cfg.Timeout)
 	}
-	reachable := probe(ctx, st.ip, st.ports, m.cfg.Timeout)
 	if ctx.Err() != nil {
 		return
 	}
@@ -215,7 +219,7 @@ func (m *Monitor) checkOne(ctx context.Context, st *hostState) {
 		st.misses++
 		if st.misses >= 2 && st.status != model.StatusDown {
 			st.status = model.StatusDown
-			emit = &model.MonitorEvent{Time: now, HostID: st.id, IP: st.ip, Hostname: st.hostname, Type: model.EventDown, Detail: "no open port responded for 2 consecutive checks"}
+			emit = &model.MonitorEvent{Time: now, HostID: st.id, IP: st.ip, Hostname: st.hostname, Type: model.EventDown, Detail: "unreachable for 2 consecutive checks"}
 		}
 	}
 	status, misses, alerted := st.status, st.misses, st.alerted
